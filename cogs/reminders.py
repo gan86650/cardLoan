@@ -60,7 +60,7 @@ class Reminders(commands.Cog):
         await self.bot.wait_until_ready()
 
     # ── /reminder ─────────────────────────────────────────────────────────────
-    @app_commands.command(name="reminder", description="設定借牌到期提醒")
+    @app_commands.command(name="提醒設定", description="設定借牌到期提醒")
     @app_commands.describe(
         enabled="開啟或關閉提醒",
         days="借牌超過幾天後提醒（預設 7）",
