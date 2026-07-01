@@ -13,7 +13,7 @@ def _loan_list_embed(title: str, loans, colour=discord.Colour.blurple()) -> disc
     for loan in loans:
         qty = f" x{loan['quantity']}" if loan['quantity'] > 1 else ""
         note = f"\n> {loan['note']}" if loan['note'] else ""
-        date = loan['borrowed_at'][:10]
+        date = loan['borrowed_at'].strftime('%Y-%m-%d')
         embed.add_field(
             name=f"#{loan['id']}  {loan['card_name']}{qty}",
             value=f"📅 {date}{note}",
@@ -97,7 +97,7 @@ class Loans(commands.Cog):
             for loan in items:
                 qty = f" x{loan['quantity']}" if loan['quantity'] > 1 else ""
                 edition = f" [{loan['edition']}]" if loan['edition'] else ""
-                date = loan['borrowed_at'][:10]
+                date = loan['borrowed_at'].strftime('%Y-%m-%d')
                 lines.append(f"`#{loan['id']}` {loan['card_name']}{edition}{qty} — {date}")
             embed.add_field(name=f"👤 {borrower}", value="\n".join(lines), inline=False)
 
@@ -123,7 +123,7 @@ class Loans(commands.Cog):
             for loan in items:
                 qty = f" x{loan['quantity']}" if loan['quantity'] > 1 else ""
                 edition = f" [{loan['edition']}]" if loan['edition'] else ""
-                date = loan['borrowed_at'][:10]
+                date = loan['borrowed_at'].strftime('%Y-%m-%d')
                 lines.append(f"`#{loan['id']}` {loan['card_name']}{edition}{qty} — {date}")
             embed.add_field(name=f"👤 {lender}", value="\n".join(lines), inline=False)
 
@@ -147,7 +147,7 @@ class Loans(commands.Cog):
             for loan in loans:
                 qty = f" x{loan['quantity']}" if loan['quantity'] > 1 else ""
                 edition = f" [{loan['edition']}]" if loan['edition'] else ""
-                date = loan['borrowed_at'][:10]
+                date = loan['borrowed_at'].strftime('%Y-%m-%d')
                 direction = (
                     f"← {loan['lender_name']} 借給你"
                     if loan["borrower_id"] == str(interaction.user.id)
@@ -194,7 +194,7 @@ class Loans(commands.Cog):
             for loan in items:
                 qty = f" x{loan['quantity']}" if loan['quantity'] > 1 else ""
                 edition = f" [{loan['edition']}]" if loan['edition'] else ""
-                date = loan['borrowed_at'][:10]
+                date = loan['borrowed_at'].strftime('%Y-%m-%d')
                 lines.append(
                     f"`#{loan['id']}` {loan['card_name']}{edition}{qty} ← **{loan['lender_name']}** · {date}"
                 )

@@ -34,7 +34,7 @@ class Reminders(commands.Cog):
             lines = []
             for loan in loans:
                 qty = f" x{loan['quantity']}" if loan['quantity'] > 1 else ""
-                date = loan['borrowed_at'][:10]
+                date = loan['borrowed_at'].strftime('%Y-%m-%d')
                 days_ago = int(loan["reminder_days"])
                 lines.append(
                     f"• `#{loan['id']}` **{loan['card_name']}{qty}** "
