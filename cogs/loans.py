@@ -5,6 +5,215 @@ from typing import Optional
 import database as db
 
 
+class QuantityModal(discord.ui.Modal, title="修改數量"):
+    數量 = discord.ui.TextInput(label="數量", placeholder="請輸入新的數量", max_length=5)
+
+    def __init__(self, view: "BorrowConfirmView | ReturnConfirmView"):
+        super().__init__()
+        self.view_ref = view
+        self.數量.default = str(view.quantity)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw = self.數量.value.strip()
+        if not raw.isdigit() or int(raw) < 1:
+            await interaction.response.send_message("數量必須是大於 0 的整數", ephemeral=True)
+            return
+
+        new_qty = int(raw)
+        max_qty = getattr(self.view_ref, "max_quantity", None)
+        if max_qty is not None and new_qty > max_qty:
+            await interaction.response.send_message(
+                f"數量不可超過剩餘的 {max_qty} 張", ephemeral=True
+            )
+            return
+
+        self.view_ref.quantity = new_qty
+        await interaction.response.edit_message(embed=self.view_ref.build_embed(), view=self.view_ref)
+
+
+class BorrowConfirmView(discord.ui.View):
+    def __init__(
+        self,
+        cog: "Loans",
+        borrower: discord.Member,
+        lender: discord.Member,
+        card_name: str,
+        edition: Optional[str],
+        quantity: int,
+        note: Optional[str],
+    ):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.borrower = borrower
+        self.lender = lender
+        self.card_name = card_name
+        self.edition = edition
+        self.quantity = quantity
+        self.note = note
+        self.message: Optional[discord.Message] = None
+
+    def build_embed(self) -> discord.Embed:
+        qty_str = f" x{self.quantity}" if self.quantity > 1 else ""
+        edition_str = f" [{self.edition}]" if self.edition else ""
+        embed = discord.Embed(
+            title="📋 請確認借牌資訊",
+            description=(
+                f"**{self.borrower.display_name}** 跟 **{self.lender.display_name}** 借了\n"
+                f"**{self.card_name}{edition_str}{qty_str}**"
+            ),
+            colour=discord.Colour.yellow(),
+        )
+        if self.note:
+            embed.add_field(name="備註", value=self.note, inline=False)
+        embed.set_footer(text="請確認資訊是否正確")
+        return embed
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.borrower.id:
+            await interaction.response.send_message(
+                "只有發起指令的人可以操作這則確認訊息", ephemeral=True
+            )
+            return False
+        return True
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(content="⌛ 確認逾時，若要記錄請重新輸入指令", embed=None, view=self)
+            except discord.HTTPException:
+                pass
+
+    @discord.ui.button(label="✅ 確認", style=discord.ButtonStyle.green)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog._ensure_user(self.borrower)
+        await self.cog._ensure_user(self.lender)
+        await db.add_loan(
+            str(interaction.guild_id),
+            str(self.lender.id),
+            str(self.borrower.id),
+            self.card_name,
+            self.edition,
+            self.quantity,
+            self.note,
+        )
+        qty_str = f" x{self.quantity}" if self.quantity > 1 else ""
+        edition_str = f" [{self.edition}]" if self.edition else ""
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(
+            content=f"✅ 已記錄：**{self.borrower.display_name}** 跟 **{self.lender.display_name}** 借了 **{self.card_name}{edition_str}{qty_str}**",
+            embed=None,
+            view=None,
+        )
+        self.stop()
+
+    @discord.ui.button(label="✏️ 修改數量", style=discord.ButtonStyle.blurple)
+    async def edit_quantity(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(QuantityModal(self))
+
+    @discord.ui.button(label="❌ 取消", style=discord.ButtonStyle.red)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="❌ 已取消", embed=None, view=None)
+        self.stop()
+
+
+class ReturnConfirmView(discord.ui.View):
+    def __init__(
+        self,
+        borrower_id: int,
+        loan_id: int,
+        card_name: str,
+        edition: Optional[str],
+        quantity: int,
+        max_quantity: int,
+        lender_name: str,
+    ):
+        super().__init__(timeout=120)
+        self.borrower_id = borrower_id
+        self.loan_id = loan_id
+        self.card_name = card_name
+        self.edition = edition
+        self.quantity = quantity
+        self.max_quantity = max_quantity
+        self.lender_name = lender_name
+        self.message: Optional[discord.Message] = None
+
+    def build_embed(self) -> discord.Embed:
+        qty_str = f" x{self.quantity}" if self.quantity > 1 else ""
+        edition_str = f" [{self.edition}]" if self.edition else ""
+        embed = discord.Embed(
+            title="📋 請確認還牌資訊",
+            description=(
+                f"紀錄 `#{self.loan_id}`：**{self.card_name}{edition_str}{qty_str}**\n"
+                f"跟 **{self.lender_name}** 借的，目前尚有 {self.max_quantity} 張未還"
+            ),
+            colour=discord.Colour.yellow(),
+        )
+        embed.set_footer(text="請確認歸還數量是否正確")
+        return embed
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.borrower_id:
+            await interaction.response.send_message(
+                "只有發起指令的人可以操作這則確認訊息", ephemeral=True
+            )
+            return False
+        return True
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(content="⌛ 確認逾時，若要歸還請重新輸入指令", embed=None, view=self)
+            except discord.HTTPException:
+                pass
+
+    @discord.ui.button(label="✅ 確認", style=discord.ButtonStyle.green)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        result = await db.return_loan(self.loan_id, str(self.borrower_id), self.quantity)
+        for item in self.children:
+            item.disabled = True
+
+        if result is None:
+            await interaction.response.edit_message(
+                content=f"⚠️ 找不到紀錄 #{self.loan_id}，可能已被歸還或刪除",
+                embed=None,
+                view=None,
+            )
+            self.stop()
+            return
+
+        edition_str = f" [{result['edition']}]" if result["edition"] else ""
+        if result["fully_returned"]:
+            content = (
+                f"✅ 紀錄 #{self.loan_id} {result['card_name']}{edition_str} "
+                f"已全部歸還（{result['returned_qty']} 張）"
+            )
+        else:
+            content = (
+                f"✅ 紀錄 #{self.loan_id} {result['card_name']}{edition_str} "
+                f"已歸還 {result['returned_qty']} 張，剩餘 {result['remaining_qty']} 張未還"
+            )
+        await interaction.response.edit_message(content=content, embed=None, view=None)
+        self.stop()
+
+    @discord.ui.button(label="✏️ 修改數量", style=discord.ButtonStyle.blurple)
+    async def edit_quantity(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(QuantityModal(self))
+
+    @discord.ui.button(label="❌ 取消", style=discord.ButtonStyle.red)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="❌ 已取消", embed=None, view=None)
+        self.stop()
+
+
 class Loans(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -37,22 +246,17 @@ class Loans(commands.Cog):
             await interaction.response.send_message("數量至少為 1", ephemeral=True)
             return
 
-        await self._ensure_user(interaction.user)
-        await self._ensure_user(牌主)
-        await db.add_loan(
-            str(interaction.guild_id),
-            str(牌主.id),
-            str(interaction.user.id),
+        view = BorrowConfirmView(
+            self,
+            interaction.user,
+            牌主,
             卡名.strip(),
             版本.strip() if 版本 else None,
             數量,
             備註,
         )
-        qty_str = f" x{數量}" if 數量 > 1 else ""
-        edition_str = f" [{版本}]" if 版本 else ""
-        await interaction.response.send_message(
-            f"✅ 已記錄：**{interaction.user.display_name}** 跟 **{牌主.display_name}** 借了 **{卡名}{edition_str}{qty_str}**"
-        )
+        await interaction.response.send_message(embed=view.build_embed(), view=view)
+        view.message = await interaction.original_response()
 
     @borrow.autocomplete("卡名")
     async def card_autocomplete(self, interaction: discord.Interaction, current: str):
@@ -143,16 +347,47 @@ class Loans(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # ── /還牌 ─────────────────────────────────────────────────────────────────
-    @app_commands.command(name="還牌", description="標記牌已歸還（用借牌紀錄的 ID）")
-    @app_commands.describe(紀錄id="借牌紀錄 ID（從 /借進來的牌 查詢）")
-    async def return_card(self, interaction: discord.Interaction, 紀錄id: int):
-        success = await db.return_loan(紀錄id, str(interaction.user.id))
-        if success:
-            await interaction.response.send_message(f"✅ 紀錄 #{紀錄id} 已標記為歸還")
-        else:
+    @app_commands.command(name="還牌", description="標記牌已歸還（用借牌紀錄的 ID，可指定數量做部分歸還）")
+    @app_commands.describe(
+        紀錄id="借牌紀錄 ID（從 /借進來的牌 查詢）",
+        數量="要歸還的數量（預設為全部歸還）",
+    )
+    async def return_card(
+        self,
+        interaction: discord.Interaction,
+        紀錄id: int,
+        數量: Optional[int] = None,
+    ):
+        if 數量 is not None and 數量 < 1:
+            await interaction.response.send_message("數量至少為 1", ephemeral=True)
+            return
+
+        loan = await db.get_loan(紀錄id, str(interaction.user.id))
+        if loan is None:
             await interaction.response.send_message(
                 f"找不到 #{紀錄id}，或這筆紀錄不是你借的", ephemeral=True
             )
+            return
+
+        max_qty = loan["quantity"]
+        quantity = 數量 if 數量 is not None else max_qty
+        if quantity > max_qty:
+            await interaction.response.send_message(
+                f"數量不可超過剩餘的 {max_qty} 張", ephemeral=True
+            )
+            return
+
+        view = ReturnConfirmView(
+            interaction.user.id,
+            紀錄id,
+            loan["card_name"],
+            loan["edition"],
+            quantity,
+            max_qty,
+            loan["lender_name"],
+        )
+        await interaction.response.send_message(embed=view.build_embed(), view=view)
+        view.message = await interaction.original_response()
 
     # ── /借牌總覽 ─────────────────────────────────────────────────────────────
     @app_commands.command(name="借牌總覽", description="顯示伺服器所有未還紀錄（公開）")
@@ -196,8 +431,8 @@ class Loans(commands.Cog):
             inline=False,
         )
         embed.add_field(
-            name="✅ /還牌 紀錄id",
-            value="標記某筆借牌紀錄已歸還\n例：`/還牌 5`",
+            name="✅ /還牌 紀錄id [數量]",
+            value="標記某筆借牌紀錄已歸還，可指定數量做部分歸還（省略則全部歸還）\n例：`/還牌 5` 或 `/還牌 5 2`",
             inline=False,
         )
         embed.add_field(

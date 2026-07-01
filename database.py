@@ -125,15 +125,51 @@ async def get_all_active_loans(guild_id: str):
         )
 
 
-async def return_loan(loan_id: int, borrower_id: str) -> bool:
+async def get_loan(loan_id: int, borrower_id: str):
     pool = await get_pool()
     async with pool.acquire() as conn:
-        result = await conn.execute(
-            """UPDATE loans SET returned_at=NOW()
-               WHERE id=$1 AND borrower_id=$2 AND returned_at IS NULL""",
+        return await conn.fetchrow(
+            """SELECT l.*, u.username AS lender_name
+               FROM loans l JOIN users u ON u.discord_id = l.lender_id
+               WHERE l.id=$1 AND l.borrower_id=$2 AND l.returned_at IS NULL""",
             loan_id, borrower_id,
         )
-        return result == "UPDATE 1"
+
+
+async def return_loan(loan_id: int, borrower_id: str, quantity: int | None = None):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            loan = await conn.fetchrow(
+                """SELECT * FROM loans
+                   WHERE id=$1 AND borrower_id=$2 AND returned_at IS NULL
+                   FOR UPDATE""",
+                loan_id, borrower_id,
+            )
+            if loan is None:
+                return None
+
+            current_qty = loan["quantity"]
+            return_qty = current_qty if quantity is None else min(quantity, current_qty)
+            fully_returned = return_qty >= current_qty
+
+            if fully_returned:
+                await conn.execute(
+                    "UPDATE loans SET returned_at=NOW() WHERE id=$1", loan_id,
+                )
+            else:
+                await conn.execute(
+                    "UPDATE loans SET quantity=quantity-$1 WHERE id=$2",
+                    return_qty, loan_id,
+                )
+
+            return {
+                "returned_qty": return_qty,
+                "remaining_qty": current_qty - return_qty,
+                "fully_returned": fully_returned,
+                "card_name": loan["card_name"],
+                "edition": loan["edition"],
+            }
 
 
 async def get_overdue_loans():
