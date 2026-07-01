@@ -16,7 +16,7 @@ class Reminders(commands.Cog):
     # ── 每天跑一次提醒 ────────────────────────────────────────────────────────
     @tasks.loop(hours=24)
     async def daily_reminder(self):
-        overdue = await db.get_overdue_loans(days=0)  # days filter is per-user in SQL
+        overdue = await db.get_overdue_loans()
 
         # group by borrower
         by_borrower: dict[str, list] = defaultdict(list)

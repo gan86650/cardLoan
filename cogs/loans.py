@@ -34,6 +34,7 @@ class Loans(commands.Cog):
     @app_commands.describe(
         lender="牌的擁有者（你跟誰借）",
         card_name="卡名",
+        edition="版本／版號（可選，例如 EN-001、Alpha）",
         quantity="數量（預設 1）",
         note="備註（可選）",
     )
@@ -42,6 +43,7 @@ class Loans(commands.Cog):
         interaction: discord.Interaction,
         lender: discord.Member,
         card_name: str,
+        edition: Optional[str] = None,
         quantity: Optional[int] = 1,
         note: Optional[str] = None,
     ):
@@ -59,12 +61,14 @@ class Loans(commands.Cog):
             str(lender.id),
             str(interaction.user.id),
             card_name.strip(),
+            edition.strip() if edition else None,
             quantity,
             note,
         )
         qty_str = f" x{quantity}" if quantity > 1 else ""
+        edition_str = f" [{edition}]" if edition else ""
         await interaction.response.send_message(
-            f"✅ 已記錄：**{interaction.user.display_name}** 跟 **{lender.display_name}** 借了 **{card_name}{qty_str}**"
+            f"✅ 已記錄：**{interaction.user.display_name}** 跟 **{lender.display_name}** 借了 **{card_name}{edition_str}{qty_str}**"
         )
 
     @borrow.autocomplete("card_name")
@@ -92,8 +96,9 @@ class Loans(commands.Cog):
             lines = []
             for loan in items:
                 qty = f" x{loan['quantity']}" if loan['quantity'] > 1 else ""
+                edition = f" [{loan['edition']}]" if loan['edition'] else ""
                 date = loan['borrowed_at'][:10]
-                lines.append(f"`#{loan['id']}` {loan['card_name']}{qty} — {date}")
+                lines.append(f"`#{loan['id']}` {loan['card_name']}{edition}{qty} — {date}")
             embed.add_field(name=f"👤 {borrower}", value="\n".join(lines), inline=False)
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -117,8 +122,9 @@ class Loans(commands.Cog):
             lines = []
             for loan in items:
                 qty = f" x{loan['quantity']}" if loan['quantity'] > 1 else ""
+                edition = f" [{loan['edition']}]" if loan['edition'] else ""
                 date = loan['borrowed_at'][:10]
-                lines.append(f"`#{loan['id']}` {loan['card_name']}{qty} — {date}")
+                lines.append(f"`#{loan['id']}` {loan['card_name']}{edition}{qty} — {date}")
             embed.add_field(name=f"👤 {lender}", value="\n".join(lines), inline=False)
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -140,6 +146,7 @@ class Loans(commands.Cog):
         else:
             for loan in loans:
                 qty = f" x{loan['quantity']}" if loan['quantity'] > 1 else ""
+                edition = f" [{loan['edition']}]" if loan['edition'] else ""
                 date = loan['borrowed_at'][:10]
                 direction = (
                     f"← {loan['lender_name']} 借給你"
@@ -147,7 +154,7 @@ class Loans(commands.Cog):
                     else f"→ 你借給 {loan['borrower_name']}"
                 )
                 embed.add_field(
-                    name=f"`#{loan['id']}` {loan['card_name']}{qty}",
+                    name=f"`#{loan['id']}` {loan['card_name']}{edition}{qty}",
                     value=f"{direction} · {date}",
                     inline=False,
                 )
@@ -186,9 +193,10 @@ class Loans(commands.Cog):
             lines = []
             for loan in items:
                 qty = f" x{loan['quantity']}" if loan['quantity'] > 1 else ""
+                edition = f" [{loan['edition']}]" if loan['edition'] else ""
                 date = loan['borrowed_at'][:10]
                 lines.append(
-                    f"`#{loan['id']}` {loan['card_name']}{qty} ← **{loan['lender_name']}** · {date}"
+                    f"`#{loan['id']}` {loan['card_name']}{edition}{qty} ← **{loan['lender_name']}** · {date}"
                 )
             embed.add_field(name=f"👤 {borrower}", value="\n".join(lines), inline=False)
 
