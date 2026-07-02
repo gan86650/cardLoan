@@ -8,7 +8,7 @@ import database as db
 class QuantityModal(discord.ui.Modal, title="修改數量"):
     數量 = discord.ui.TextInput(label="數量", placeholder="請輸入新的數量", max_length=5)
 
-    def __init__(self, view: "BorrowConfirmView | ReturnConfirmView"):
+    def __init__(self, view: "BorrowConfirmView | LendConfirmView | ReturnConfirmView"):
         super().__init__()
         self.view_ref = view
         self.數量.default = str(view.quantity)
@@ -104,6 +104,96 @@ class BorrowConfirmView(discord.ui.View):
             item.disabled = True
         await interaction.response.edit_message(
             content=f"✅ 已記錄：**{self.borrower.display_name}** 跟 **{self.lender.display_name}** 借了 **{self.card_name}{edition_str}{qty_str}**",
+            embed=None,
+            view=None,
+        )
+        self.stop()
+
+    @discord.ui.button(label="✏️ 修改數量", style=discord.ButtonStyle.blurple)
+    async def edit_quantity(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(QuantityModal(self))
+
+    @discord.ui.button(label="❌ 取消", style=discord.ButtonStyle.red)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="❌ 已取消", embed=None, view=None)
+        self.stop()
+
+
+class LendConfirmView(discord.ui.View):
+    def __init__(
+        self,
+        cog: "Loans",
+        lender: discord.Member,
+        borrower: discord.Member,
+        card_name: str,
+        edition: Optional[str],
+        quantity: int,
+        note: Optional[str],
+    ):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.lender = lender
+        self.borrower = borrower
+        self.card_name = card_name
+        self.edition = edition
+        self.quantity = quantity
+        self.note = note
+        self.message: Optional[discord.Message] = None
+
+    def build_embed(self) -> discord.Embed:
+        qty_str = f" x{self.quantity}" if self.quantity > 1 else ""
+        edition_str = f" [{self.edition}]" if self.edition else ""
+        embed = discord.Embed(
+            title="📋 請確認借出資訊",
+            description=(
+                f"**{self.lender.display_name}** 借給 **{self.borrower.display_name}**\n"
+                f"**{self.card_name}{edition_str}{qty_str}**"
+            ),
+            colour=discord.Colour.yellow(),
+        )
+        if self.note:
+            embed.add_field(name="備註", value=self.note, inline=False)
+        embed.set_footer(text="請確認資訊是否正確")
+        return embed
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.lender.id:
+            await interaction.response.send_message(
+                "只有發起指令的人可以操作這則確認訊息", ephemeral=True
+            )
+            return False
+        return True
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(content="⌛ 確認逾時，若要記錄請重新輸入指令", embed=None, view=self)
+            except discord.HTTPException:
+                pass
+
+    @discord.ui.button(label="✅ 確認", style=discord.ButtonStyle.green)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog._ensure_user(self.lender)
+        await self.cog._ensure_user(self.borrower)
+        await db.add_loan(
+            str(interaction.guild_id),
+            str(self.lender.id),
+            str(self.borrower.id),
+            self.card_name,
+            self.edition,
+            self.quantity,
+            self.note,
+        )
+        qty_str = f" x{self.quantity}" if self.quantity > 1 else ""
+        edition_str = f" [{self.edition}]" if self.edition else ""
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(
+            content=f"✅ 已記錄：**{self.lender.display_name}** 借給 **{self.borrower.display_name}** **{self.card_name}{edition_str}{qty_str}**",
             embed=None,
             view=None,
         )
@@ -260,6 +350,48 @@ class Loans(commands.Cog):
 
     @borrow.autocomplete("卡名")
     async def card_autocomplete(self, interaction: discord.Interaction, current: str):
+        cards = await db.get_card_autocomplete(current)
+        return [app_commands.Choice(name=c, value=c) for c in cards]
+
+    # ── /借出 ─────────────────────────────────────────────────────────────────
+    @app_commands.command(name="借出", description="記錄你借出牌給某人")
+    @app_commands.describe(
+        借用人="跟你借牌的人",
+        卡名="卡名",
+        版本="版本／版號（可選，例如 EN-001、Alpha）",
+        數量="數量（預設 1）",
+        備註="備註（可選）",
+    )
+    async def lend(
+        self,
+        interaction: discord.Interaction,
+        借用人: discord.Member,
+        卡名: str,
+        版本: Optional[str] = None,
+        數量: Optional[int] = 1,
+        備註: Optional[str] = None,
+    ):
+        if 借用人.id == interaction.user.id:
+            await interaction.response.send_message("不能借給自己 😅", ephemeral=True)
+            return
+        if 數量 < 1:
+            await interaction.response.send_message("數量至少為 1", ephemeral=True)
+            return
+
+        view = LendConfirmView(
+            self,
+            interaction.user,
+            借用人,
+            卡名.strip(),
+            版本.strip() if 版本 else None,
+            數量,
+            備註,
+        )
+        await interaction.response.send_message(embed=view.build_embed(), view=view)
+        view.message = await interaction.original_response()
+
+    @lend.autocomplete("卡名")
+    async def lend_card_autocomplete(self, interaction: discord.Interaction, current: str):
         cards = await db.get_card_autocomplete(current)
         return [app_commands.Choice(name=c, value=c) for c in cards]
 
@@ -428,6 +560,11 @@ class Loans(commands.Cog):
         embed.add_field(
             name="📥 /借牌 @牌主 卡名 [版本] [數量] [備註]",
             value="記錄你跟某人借了牌\n例：`/借牌 @小明 Robogon of Starfall Ridge EN-001 2`",
+            inline=False,
+        )
+        embed.add_field(
+            name="📤 /借出 @借用人 卡名 [版本] [數量] [備註]",
+            value="記錄你借出牌給某人\n例：`/借出 @小明 Robogon of Starfall Ridge EN-001 2`",
             inline=False,
         )
         embed.add_field(
