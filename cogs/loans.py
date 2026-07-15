@@ -304,6 +304,99 @@ class ReturnConfirmView(discord.ui.View):
         self.stop()
 
 
+class TransferConfirmView(discord.ui.View):
+    def __init__(
+        self,
+        cog: "Loans",
+        current_borrower: discord.Member,
+        new_borrower: discord.Member,
+        loan_id: int,
+        card_name: str,
+        edition: Optional[str],
+        quantity: int,
+        lender_name: str,
+    ):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.current_borrower = current_borrower
+        self.new_borrower = new_borrower
+        self.loan_id = loan_id
+        self.card_name = card_name
+        self.edition = edition
+        self.quantity = quantity
+        self.lender_name = lender_name
+        self.message: Optional[discord.Message] = None
+
+    def build_embed(self) -> discord.Embed:
+        qty_str = f" x{self.quantity}" if self.quantity > 1 else ""
+        edition_str = f" [{self.edition}]" if self.edition else ""
+        embed = discord.Embed(
+            title="📋 請確認轉借資訊",
+            description=(
+                f"紀錄 `#{self.loan_id}`：**{self.card_name}{edition_str}{qty_str}**\n"
+                f"跟 **{self.lender_name}** 借的，將從 **{self.current_borrower.display_name}** "
+                f"轉借給 **{self.new_borrower.display_name}**"
+            ),
+            colour=discord.Colour.yellow(),
+        )
+        embed.set_footer(text="請確認轉借對象是否正確")
+        return embed
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.current_borrower.id:
+            await interaction.response.send_message(
+                "只有發起指令的人可以操作這則確認訊息", ephemeral=True
+            )
+            return False
+        return True
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(content="⌛ 確認逾時，若要轉借請重新輸入指令", embed=None, view=self)
+            except discord.HTTPException:
+                pass
+
+    @discord.ui.button(label="✅ 確認", style=discord.ButtonStyle.green)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog._ensure_user(self.new_borrower)
+        result = await db.transfer_loan(
+            self.loan_id, str(self.current_borrower.id), str(self.new_borrower.id)
+        )
+        for item in self.children:
+            item.disabled = True
+
+        if result is None:
+            await interaction.response.edit_message(
+                content=f"⚠️ 找不到紀錄 #{self.loan_id}，可能已被歸還或刪除",
+                embed=None,
+                view=None,
+            )
+            self.stop()
+            return
+
+        qty_str = f" x{self.quantity}" if self.quantity > 1 else ""
+        edition_str = f" [{self.edition}]" if self.edition else ""
+        await interaction.response.edit_message(
+            content=(
+                f"✅ 紀錄 #{self.loan_id} {self.card_name}{edition_str}{qty_str} "
+                f"已從 **{self.current_borrower.display_name}** 轉借給 **{self.new_borrower.display_name}**"
+            ),
+            embed=None,
+            view=None,
+        )
+        self.stop()
+
+    @discord.ui.button(label="❌ 取消", style=discord.ButtonStyle.red)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="❌ 已取消", embed=None, view=None)
+        self.stop()
+
+
 class Loans(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -521,6 +614,48 @@ class Loans(commands.Cog):
         await interaction.response.send_message(embed=view.build_embed(), view=view)
         view.message = await interaction.original_response()
 
+    # ── /轉借 ─────────────────────────────────────────────────────────────────
+    @app_commands.command(name="轉借", description="把你借到的牌轉借給另一個人（牌主不變，借貸關係轉移）")
+    @app_commands.describe(
+        紀錄id="要轉借的紀錄 ID（從 /借進來的牌 查詢）",
+        新借用人="牌要轉給誰",
+    )
+    async def transfer(
+        self,
+        interaction: discord.Interaction,
+        紀錄id: int,
+        新借用人: discord.Member,
+    ):
+        if 新借用人.id == interaction.user.id:
+            await interaction.response.send_message("牌已經在你這了 😅", ephemeral=True)
+            return
+
+        loan = await db.get_loan(紀錄id, str(interaction.user.id))
+        if loan is None:
+            await interaction.response.send_message(
+                f"找不到 #{紀錄id}，或這筆紀錄不是你借的", ephemeral=True
+            )
+            return
+
+        if str(新借用人.id) == loan["lender_id"]:
+            await interaction.response.send_message(
+                "對方就是原本的牌主，請改用 /還牌", ephemeral=True
+            )
+            return
+
+        view = TransferConfirmView(
+            self,
+            interaction.user,
+            新借用人,
+            紀錄id,
+            loan["card_name"],
+            loan["edition"],
+            loan["quantity"],
+            loan["lender_name"],
+        )
+        await interaction.response.send_message(embed=view.build_embed(), view=view)
+        view.message = await interaction.original_response()
+
     # ── /借牌總覽 ─────────────────────────────────────────────────────────────
     @app_commands.command(name="借牌總覽", description="顯示伺服器所有未還紀錄（公開）")
     async def loans(self, interaction: discord.Interaction):
@@ -570,6 +705,11 @@ class Loans(commands.Cog):
         embed.add_field(
             name="✅ /還牌 紀錄id [數量]",
             value="標記某筆借牌紀錄已歸還，可指定數量做部分歸還（省略則全部歸還）\n例：`/還牌 5` 或 `/還牌 5 2`",
+            inline=False,
+        )
+        embed.add_field(
+            name="🔁 /轉借 紀錄id @新借用人",
+            value="把你借到的牌轉借給另一個人，牌主不變，借貸關係直接轉移\n例：`/轉借 5 @小華`",
             inline=False,
         )
         embed.add_field(

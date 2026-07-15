@@ -19,7 +19,7 @@ async def init_db():
                 discord_id       TEXT PRIMARY KEY,
                 username         TEXT NOT NULL,
                 reminder_enabled BOOLEAN DEFAULT TRUE,
-                reminder_days    INTEGER DEFAULT 7
+                reminder_days    INTEGER DEFAULT 14
             );
 
             CREATE TABLE IF NOT EXISTS loans (
@@ -39,6 +39,10 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_loans_borrower ON loans(borrower_id);
             CREATE INDEX IF NOT EXISTS idx_loans_guild    ON loans(guild_id);
         """)
+        # 既有的 table 不會被 CREATE TABLE IF NOT EXISTS 更新，這裡把 schema 預設值
+        # 跟目前還停留在舊預設值 7 天的使用者一併更新成新的 14 天
+        await conn.execute("ALTER TABLE users ALTER COLUMN reminder_days SET DEFAULT 14")
+        await conn.execute("UPDATE users SET reminder_days = 14 WHERE reminder_days = 7")
 
 
 async def upsert_user(discord_id: str, username: str):
@@ -134,6 +138,27 @@ async def get_loan(loan_id: int, borrower_id: str):
                WHERE l.id=$1 AND l.borrower_id=$2 AND l.returned_at IS NULL""",
             loan_id, borrower_id,
         )
+
+
+async def transfer_loan(loan_id: int, current_borrower_id: str, new_borrower_id: str):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            loan = await conn.fetchrow(
+                """SELECT l.*, u.username AS lender_name
+                   FROM loans l JOIN users u ON u.discord_id = l.lender_id
+                   WHERE l.id=$1 AND l.borrower_id=$2 AND l.returned_at IS NULL
+                   FOR UPDATE""",
+                loan_id, current_borrower_id,
+            )
+            if loan is None:
+                return None
+
+            await conn.execute(
+                "UPDATE loans SET borrower_id=$1 WHERE id=$2",
+                new_borrower_id, loan_id,
+            )
+            return loan
 
 
 async def return_loan(loan_id: int, borrower_id: str, quantity: int | None = None):
