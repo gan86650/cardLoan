@@ -15,10 +15,15 @@ async def init_db():
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("""
+            CREATE TABLE IF NOT EXISTS _migrations (
+                name       TEXT PRIMARY KEY,
+                applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+
             CREATE TABLE IF NOT EXISTS users (
                 discord_id       TEXT PRIMARY KEY,
                 username         TEXT NOT NULL,
-                reminder_enabled BOOLEAN DEFAULT TRUE,
+                reminder_enabled BOOLEAN DEFAULT FALSE,
                 reminder_days    INTEGER DEFAULT 14
             );
 
@@ -39,10 +44,23 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_loans_borrower ON loans(borrower_id);
             CREATE INDEX IF NOT EXISTS idx_loans_guild    ON loans(guild_id);
         """)
-        # 既有的 table 不會被 CREATE TABLE IF NOT EXISTS 更新，這裡把 schema 預設值
-        # 跟目前還停留在舊預設值 7 天的使用者一併更新成新的 14 天
+        # 既有的 table 不會被 CREATE TABLE IF NOT EXISTS 更新，schema 預設值要手動補
         await conn.execute("ALTER TABLE users ALTER COLUMN reminder_days SET DEFAULT 14")
-        await conn.execute("UPDATE users SET reminder_days = 14 WHERE reminder_days = 7")
+        await conn.execute("ALTER TABLE users ALTER COLUMN reminder_enabled SET DEFAULT FALSE")
+        # 一次性把還停留在舊預設值的既有使用者資料改成新預設值，用 _migrations 記錄
+        # 避免每次開機都重跑，蓋掉使用者之後自己明確設定的值
+        await _run_once(conn, "reminder_days_7_to_14",
+                         "UPDATE users SET reminder_days = 14 WHERE reminder_days = 7")
+        await _run_once(conn, "reminder_enabled_default_off",
+                         "UPDATE users SET reminder_enabled = FALSE")
+
+
+async def _run_once(conn, name: str, sql: str):
+    applied = await conn.fetchval("SELECT 1 FROM _migrations WHERE name=$1", name)
+    if applied:
+        return
+    await conn.execute(sql)
+    await conn.execute("INSERT INTO _migrations(name) VALUES ($1)", name)
 
 
 async def upsert_user(discord_id: str, username: str):

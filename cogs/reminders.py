@@ -46,7 +46,7 @@ class Reminders(commands.Cog):
                 description=(
                     "你有以下牌還沒還，記得跟牌主確認一下！\n\n"
                     + "\n".join(lines)
-                    + "\n\n還牌後用 `/return <ID>` 標記歸還。"
+                    + "\n\n還牌後用 `/還牌 <ID>` 標記歸還。"
                 ),
                 colour=discord.Colour.yellow(),
             )
